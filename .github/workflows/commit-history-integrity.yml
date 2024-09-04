@@ -1,0 +1,53 @@
+name: Commit history integrity verification
+
+on:
+  push:
+
+jobs:
+  new-abnormal-commits-scanner:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: '0'
+
+    - name: Get all abnormal commits
+      run: |
+        #set up folder to store abnormal commits record as artifact and list them as a file in it; set up dummy for cache 
+        mkdir -p artifacts
+        mkdir -p dummy-cache
+        git log --numstat --pretty=oneline -w --ignore-cr-at-eol --ignore-blank-lines | tac | awk 'BEGIN{init = 1; flag = 0} {if (init==0 && $1 ~ /^[0-9]+$/ && ($1>20 || $2>20)) {print "too many insertions (",$1,") or deletions (",$2,") in file ", $3; flag=1}}  {if (length($1) == 40) {init=0; if (flag==1) {print "in commit",$0,"\n"; flag =0}}}' > artifacts/abnormal-log.txt
+        if [ -s artifacts/abnormal-log.txt ]; then
+          #file non-empty
+          echo "last_abnormal_sha_now=$(awk '{if (length($3) == 40) {last_commit=$3}} END{print last_commit}' artifacts/abnormal-log.txt)" >> "$GITHUB_ENV"
+        fi
+
+    - name: Restore cache of abnormal commits
+      if: env.last_abnormal_sha_now != ''
+      id: restore-cache-commits
+      uses: actions/cache/restore@v3
+      with:
+        path: dummy-cache
+        key: abnormal-${{env.last_abnormal_sha_now}}
+
+    - name: Save abnormal commits as artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: abnormal-commits
+        path: artifacts
+
+    - name: Save cache of abnormal commits
+      if: env.last_abnormal_sha_now != '' && steps.restore-cache-commits.outputs.cache-hit != 'true'
+      id: save-cache-commits
+      uses: actions/cache/save@v3
+      with:
+        path: dummy-cache
+        key: abnormal-${{env.last_abnormal_sha_now}}
+
+    - name: Report abnormal commits
+      if: env.last_abnormal_sha_now != '' && steps.restore-cache-commits.outputs.cache-hit != 'true'
+      run: |
+        # The following abnormal commits detected (oldest listed first) on ${{ github.ref_name }}. Such commits may reduce your mark (unless they are from IDE config files or other similar sources).
+        cat artifacts/abnormal-log.txt
+        exit 1
